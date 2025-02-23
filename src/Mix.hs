@@ -8,6 +8,8 @@ import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.List.NonEmpty.Extra ((|>))
 import Data.List.Extra (snoc)
 import Control.Monad.State
+import Debug.Trace
+
 
 type StaticState t s = M.Map (Var s) (Value t)
 data MixState t s = MixState { 
@@ -42,7 +44,7 @@ mixLoop bs = do
         ((l, vs) : ps) -> do
             modify $ \m -> m { pending = ps }
             s <- get
-            let (bb, s') = runState (mixGoto bs l) (MixBlockState { mixState = s, staticState = vs, dynamicAssignments = [] })
+            let (bb, s') = runState (mixGoto (staticLabel l vs) bs l) (MixBlockState { mixState = s, staticState = vs, dynamicAssignments = [] })
             put $ mixState s'
             modify $ \m -> let (Program args bs') = residual m in m { residual = Program args (bs' |> bb) }
             mixLoop bs
@@ -53,13 +55,13 @@ mixBlock bs l (BasicBlock _ asn jmp) = do
     vs <- gets staticState
     as <- gets dynamicAssignments
     case jmp of
-        (Goto l') -> mixGoto bs l'
+        (Goto l') -> mixGoto l bs l'
         (If e t f) -> case reduce vs e of
-            (Const v) -> mixGoto bs $ if truthiness v then t else f
+            (Const v) -> mixGoto l bs $ if truthiness v then t else f
             e' -> do
                 pend t
                 pend f
-                return $ BasicBlock l as (If e' t f)
+                return $ BasicBlock l as (If e' (staticLabel t vs) (staticLabel f vs))
         (Return e) -> return $ BasicBlock l as (Return (reduce vs e))
 
 mixAssn :: (ValueClass t) => Assignment t s -> State (MixBlockState t s) ()
@@ -69,13 +71,12 @@ mixAssn (Assn x e) = do
         (Const v) -> modify $ \s -> s { staticState = M.insert x v vs }
         e' -> modify $ \s -> s { dynamicAssignments = dynamicAssignments s `snoc` (Assn x e') }
 
-mixGoto :: (ValueClass t) => M.Map (Label s) (FlowBlock t s) -> Label s -> State (MixBlockState t s) (FlowBlock t s)
-mixGoto bs l = do
-    vs <- gets staticState
+mixGoto :: (ValueClass t) => Label s -> M.Map (Label s) (FlowBlock t s) -> Label s -> State (MixBlockState t s) (FlowBlock t s)
+mixGoto l' bs l = do
     let b = M.lookup l bs
     case b of
         Nothing -> error "Invalid label"
-        (Just b') -> mixBlock bs (staticLabel l vs) b'
+        (Just b') -> mixBlock bs l' b'
 
 pend :: (ValueClass t) => Label s -> State (MixBlockState t s) ()
 pend l = do
